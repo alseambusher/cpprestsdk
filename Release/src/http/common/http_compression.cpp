@@ -2,13 +2,13 @@
  * Copyright (C) Microsoft. All rights reserved.
  * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
  *
- * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
  *
  * HTTP Library: Compression and decompression interfaces
  *
  * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
  *
- * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
  ****/
 
 #include "stdafx.h"
@@ -17,21 +17,16 @@
 // it. CPPREST_EXCLUDE_BROTLI is set if we want to explicitly disable Brotli compression support.
 // CPPREST_EXCLUDE_WEBSOCKETS is a flag that now essentially means "no external dependencies". TODO: Rename
 
-#if __APPLE__
-#include "TargetConditionals.h"
-#if defined(TARGET_OS_MAC)
-#if !defined(CPPREST_EXCLUDE_COMPRESSION)
-#define CPPREST_HTTP_COMPRESSION
-#endif // !defined(CPPREST_EXCLUDE_COMPRESSION)
-#endif // defined(TARGET_OS_MAC)
-#elif defined(_WIN32) && (!defined(WINAPI_FAMILY) || WINAPI_PARTITION_DESKTOP)
 #if !defined(CPPREST_EXCLUDE_WEBSOCKETS) && !defined(CPPREST_EXCLUDE_COMPRESSION)
 #define CPPREST_HTTP_COMPRESSION
 #endif // !defined(CPPREST_EXCLUDE_WEBSOCKETS) && !defined(CPPREST_EXCLUDE_COMPRESSION)
-#endif
 
 #if defined(CPPREST_HTTP_COMPRESSION)
 #include <zlib.h>
+// zconf.h may define compress
+#ifdef compress
+#undef compress
+#endif
 #if !defined(CPPREST_EXCLUDE_BROTLI)
 #define CPPREST_BROTLI_COMPRESSION
 #endif // CPPREST_EXCLUDE_BROTLI
@@ -86,11 +81,17 @@ public:
 
         if (m_state != Z_OK && m_state != Z_BUF_ERROR && m_state != Z_STREAM_ERROR)
         {
-            throw std::runtime_error("Prior unrecoverable compression stream error " +
-                std::to_string(m_state));
+            throw std::runtime_error("Prior unrecoverable compression stream error " + std::to_string(m_state));
         }
 
-        if (input_size > std::numeric_limits<uInt>::max() || output_size > std::numeric_limits<uInt>::max())
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wtautological-constant-compare"
+#endif // __clang__
+        if (input_size > (std::numeric_limits<uInt>::max)() || output_size > (std::numeric_limits<uInt>::max)())
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif // __clang__
         {
             throw std::runtime_error("Compression input or output size out of range");
         }
@@ -144,8 +145,8 @@ public:
     ~zlib_compressor_base() { (void)deflateEnd(&m_stream); }
 
 private:
-    int m_state{Z_BUF_ERROR};
-    z_stream m_stream{};
+    int m_state {Z_BUF_ERROR};
+    z_stream m_stream {};
     const utility::string_t& m_algorithm;
 };
 
@@ -184,7 +185,14 @@ public:
             throw std::runtime_error("Prior unrecoverable decompression stream error " + std::to_string(m_state));
         }
 
-        if (input_size > std::numeric_limits<uInt>::max() || output_size > std::numeric_limits<uInt>::max())
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wtautological-constant-compare"
+#endif // __clang__
+        if (input_size > (std::numeric_limits<uInt>::max)() || output_size > (std::numeric_limits<uInt>::max)())
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif // __clang__
         {
             throw std::runtime_error("Compression input or output size out of range");
         }
@@ -239,8 +247,8 @@ public:
     ~zlib_decompressor_base() { (void)inflateEnd(&m_stream); }
 
 private:
-    int m_state{Z_BUF_ERROR};
-    z_stream m_stream{};
+    int m_state {Z_BUF_ERROR};
+    z_stream m_stream {};
     const utility::string_t& m_algorithm;
 };
 
@@ -260,7 +268,7 @@ public:
 class gzip_decompressor : public zlib_decompressor_base
 {
 public:
-    gzip_decompressor() : zlib_decompressor_base(16) // gzip auto-detect
+    gzip_decompressor() : zlib_decompressor_base(31) // 15 is MAX_WBITS in zconf.h; add 16 for gzip
     {
     }
 };
@@ -294,8 +302,17 @@ public:
 
     brotli_compressor(uint32_t window = BROTLI_DEFAULT_WINDOW,
                       uint32_t quality = BROTLI_DEFAULT_QUALITY,
-                      uint32_t mode = BROTLI_DEFAULT_MODE)
-        : m_algorithm(BROTLI), m_window(window), m_quality(quality), m_mode(mode)
+                      uint32_t mode = BROTLI_DEFAULT_MODE,
+                      uint32_t block = 0,
+                      uint32_t nomodel = 0,
+                      uint32_t hint = 0)
+        : m_window(window)
+        , m_quality(quality)
+        , m_mode(mode)
+        , m_block(block)
+        , m_nomodel(nomodel)
+        , m_hint(hint)
+        , m_algorithm(BROTLI)
     {
         (void)reset();
     }
@@ -323,41 +340,35 @@ public:
         }
 
         const uint8_t* next_in = input;
-        size_t avail_in;
+        size_t avail_in = 0;
         uint8_t* next_out = output;
         size_t avail_out = output_size;
         size_t total_out;
 
         if (BrotliEncoderHasMoreOutput(m_stream) == BROTLI_TRUE)
         {
-            avail_in = 0;
+            // Drain any compressed bytes remaining from a prior call
             do
             {
-                m_state = BrotliEncoderCompressStream(m_stream,
-                                                      (hint == operation_hint::is_last) ? BROTLI_OPERATION_FINISH
-                                                                                        : BROTLI_OPERATION_FLUSH,
-                                                      &avail_in,
-                                                      &next_in,
-                                                      &avail_out,
-                                                      &next_out,
-                                                      &total_out);
+                m_state = BrotliEncoderCompressStream(
+                    m_stream, BROTLI_OPERATION_FLUSH, &avail_in, &next_in, &avail_out, &next_out, &total_out);
             } while (m_state == BROTLI_TRUE && avail_out && BrotliEncoderHasMoreOutput(m_stream) == BROTLI_TRUE);
         }
 
-        if (m_state == BROTLI_TRUE && avail_out)
+        if (m_state == BROTLI_TRUE && avail_out && input_size)
         {
+            // Compress the caller-supplied buffer
             avail_in = input_size;
             do
             {
-                m_state = BrotliEncoderCompressStream(m_stream,
-                                                      (hint == operation_hint::is_last) ? BROTLI_OPERATION_FINISH
-                                                                                        : BROTLI_OPERATION_FLUSH,
-                                                      &avail_in,
-                                                      &next_in,
-                                                      &avail_out,
-                                                      &next_out,
-                                                      &total_out);
+                m_state = BrotliEncoderCompressStream(
+                    m_stream, BROTLI_OPERATION_FLUSH, &avail_in, &next_in, &avail_out, &next_out, &total_out);
             } while (m_state == BROTLI_TRUE && avail_out && BrotliEncoderHasMoreOutput(m_stream) == BROTLI_TRUE);
+        }
+        else
+        {
+            // We're not compressing any new data; ensure calculation sanity
+            input_size = 0;
         }
 
         if (m_state != BROTLI_TRUE)
@@ -367,7 +378,18 @@ public:
 
         if (hint == operation_hint::is_last)
         {
-            m_done = (BrotliEncoderIsFinished(m_stream) == BROTLI_TRUE);
+            if (avail_out)
+            {
+                // Make one more pass to finalize the compressed stream
+                _ASSERTE(!avail_in);
+                m_state = BrotliEncoderCompressStream(
+                    m_stream, BROTLI_OPERATION_FINISH, &avail_in, &next_in, &avail_out, &next_out, &total_out);
+                if (m_state != BROTLI_TRUE)
+                {
+                    throw std::runtime_error("Unrecoverable error finalizing compression stream");
+                }
+                m_done = (BrotliEncoderIsFinished(m_stream) == BROTLI_TRUE);
+            }
         }
 
         input_bytes_processed = input_size - avail_in;
@@ -415,7 +437,19 @@ public:
         }
         if (m_state == BROTLI_TRUE && m_mode != BROTLI_DEFAULT_MODE)
         {
-            m_state = BrotliEncoderSetParameter(m_stream, BROTLI_PARAM_MODE, m_window);
+            m_state = BrotliEncoderSetParameter(m_stream, BROTLI_PARAM_MODE, m_mode);
+        }
+        if (m_state == BROTLI_TRUE && m_block != 0)
+        {
+            m_state = BrotliEncoderSetParameter(m_stream, BROTLI_PARAM_LGBLOCK, m_block);
+        }
+        if (m_state == BROTLI_TRUE && m_nomodel != 0)
+        {
+            m_state = BrotliEncoderSetParameter(m_stream, BROTLI_PARAM_DISABLE_LITERAL_CONTEXT_MODELING, m_nomodel);
+        }
+        if (m_state == BROTLI_TRUE && m_hint != 0)
+        {
+            m_state = BrotliEncoderSetParameter(m_stream, BROTLI_PARAM_SIZE_HINT, m_hint);
         }
 
         if (m_state != BROTLI_TRUE)
@@ -433,12 +467,15 @@ public:
     }
 
 private:
-    BROTLI_BOOL m_state{BROTLI_FALSE};
-    BrotliEncoderState* m_stream{nullptr};
-    bool m_done{false};
+    BROTLI_BOOL m_state {BROTLI_FALSE};
+    BrotliEncoderState* m_stream {nullptr};
+    bool m_done {false};
     uint32_t m_window;
     uint32_t m_quality;
     uint32_t m_mode;
+    uint32_t m_block;
+    uint32_t m_nomodel;
+    uint32_t m_hint;
     const utility::string_t& m_algorithm;
 };
 
@@ -490,6 +527,7 @@ public:
         // have to first allocate a guaranteed-large-enough buffer and then copy out of it, or we'd have to call
         // reset() if it failed due to insufficient output buffer space (and we'd need to use
         // BrotliDecoderGetErrorCode() to tell if that's why it failed)
+        (void)hint;
         m_state = BrotliDecoderDecompressStream(m_stream, &avail_in, &next_in, &avail_out, &next_out, &total_out);
         if (m_state == BROTLI_DECODER_RESULT_ERROR)
         {
@@ -546,8 +584,8 @@ public:
     }
 
 private:
-    BrotliDecoderResult m_state{BROTLI_DECODER_RESULT_ERROR};
-    BrotliDecoderState* m_stream{nullptr};
+    BrotliDecoderResult m_state {BROTLI_DECODER_RESULT_ERROR};
+    BrotliDecoderState* m_stream {nullptr};
     const utility::string_t& m_algorithm;
 };
 #endif // CPPREST_BROTLI_COMPRESSION
@@ -557,6 +595,7 @@ private:
 class generic_compress_factory : public compress_factory
 {
 public:
+    ~generic_compress_factory() CPPREST_NOEXCEPT {}
     generic_compress_factory(const utility::string_t& algorithm,
                              std::function<std::unique_ptr<compress_provider>()> make_compressor)
         : m_algorithm(algorithm), _make_compressor(make_compressor)
@@ -576,6 +615,7 @@ private:
 class generic_decompress_factory : public decompress_factory
 {
 public:
+    ~generic_decompress_factory() CPPREST_NOEXCEPT {}
     generic_decompress_factory(const utility::string_t& algorithm,
                                uint16_t weight,
                                std::function<std::unique_ptr<decompress_provider>()> make_decompressor)
@@ -599,7 +639,8 @@ private:
 static const std::vector<std::shared_ptr<compress_factory>> g_compress_factories
 #if defined(CPPREST_HTTP_COMPRESSION)
     = {std::make_shared<generic_compress_factory>(
-           algorithm::GZIP, []() -> std::unique_ptr<compress_provider> { return utility::details::make_unique<gzip_compressor>(); }),
+           algorithm::GZIP,
+           []() -> std::unique_ptr<compress_provider> { return utility::details::make_unique<gzip_compressor>(); }),
        std::make_shared<generic_compress_factory>(
            algorithm::DEFLATE,
            []() -> std::unique_ptr<compress_provider> { return utility::details::make_unique<deflate_compressor>(); }),
@@ -619,15 +660,17 @@ static const std::vector<std::shared_ptr<decompress_factory>> g_decompress_facto
            algorithm::GZIP,
            500,
            []() -> std::unique_ptr<decompress_provider> { return utility::details::make_unique<gzip_decompressor>(); }),
-       std::make_shared<generic_decompress_factory>(
-           algorithm::DEFLATE,
-           500,
-           []() -> std::unique_ptr<decompress_provider> { return utility::details::make_unique<deflate_decompressor>(); }),
+       std::make_shared<generic_decompress_factory>(algorithm::DEFLATE,
+                                                    500,
+                                                    []() -> std::unique_ptr<decompress_provider> {
+                                                        return utility::details::make_unique<deflate_decompressor>();
+                                                    }),
 #if defined(CPPREST_BROTLI_COMPRESSION)
-       std::make_shared<generic_decompress_factory>(
-           algorithm::BROTLI,
-           500,
-           []() -> std::unique_ptr<decompress_provider> { return utility::details::make_unique<brotli_decompressor>(); })
+       std::make_shared<generic_decompress_factory>(algorithm::BROTLI,
+                                                    500,
+                                                    []() -> std::unique_ptr<decompress_provider> {
+                                                        return utility::details::make_unique<brotli_decompressor>();
+                                                    })
 #endif // CPPREST_BROTLI_COMPRESSION
 };
 #else  // CPPREST_HTTP_COMPRESSION
@@ -713,7 +756,6 @@ std::shared_ptr<decompress_factory> get_decompress_factory(const utility::string
     return std::shared_ptr<decompress_factory>();
 }
 
-
 std::unique_ptr<compress_provider> make_gzip_compressor(int compressionLevel, int method, int strategy, int memLevel)
 {
 #if defined(CPPREST_HTTP_COMPRESSION)
@@ -740,14 +782,18 @@ std::unique_ptr<compress_provider> make_deflate_compressor(int compressionLevel,
 #endif // CPPREST_HTTP_COMPRESSION
 }
 
-std::unique_ptr<compress_provider> make_brotli_compressor(uint32_t window, uint32_t quality, uint32_t mode)
+std::unique_ptr<compress_provider> make_brotli_compressor(
+    uint32_t window, uint32_t quality, uint32_t mode, uint32_t block, uint32_t nomodel, uint32_t hint)
 {
 #if defined(CPPREST_HTTP_COMPRESSION) && defined(CPPREST_BROTLI_COMPRESSION)
-    return utility::details::make_unique<brotli_compressor>(window, quality, mode);
+    return utility::details::make_unique<brotli_compressor>(window, quality, mode, block, nomodel, hint);
 #else  // CPPREST_BROTLI_COMPRESSION
     (void)window;
     (void)quality;
     (void)mode;
+    (void)block;
+    (void)nomodel;
+    (void)hint;
     return std::unique_ptr<compress_provider>();
 #endif // CPPREST_BROTLI_COMPRESSION
 }

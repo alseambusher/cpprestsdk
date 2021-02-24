@@ -39,7 +39,7 @@ Once you have the library, look at our [tutorial](https://github.com/Microsoft/c
 
 To use from CMake:
 ```cmake
-cmake_minimum_required(VERSION 3.7)
+cmake_minimum_required(VERSION 3.9)
 project(main)
 
 find_package(cpprestsdk REQUIRED)
@@ -70,6 +70,6 @@ We'd love to get your review score, whether good or bad, but even more than that
 *   [FAQ](https://github.com/Microsoft/cpprestsdk/wiki/FAQ)
 *   [Documentation](https://github.com/Microsoft/cpprestsdk/wiki)
 *   [Issue Tracker](https://github.com/Microsoft/cpprestsdk/issues)
-*   Directly contact us: <askcasablanca@microsoft.com>
 
 This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/). For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+
